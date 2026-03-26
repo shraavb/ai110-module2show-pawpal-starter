@@ -158,3 +158,188 @@ def test_generate_recurring_tasks_creates_next_occurrence():
     assert len(new_tasks) == 1
     assert new_tasks[0].is_completed is False
     assert new_tasks[0].due_time == task.due_time.replace(day=task.due_time.day + 1)
+
+
+# ── sort_by_time tests ────────────────────────────────────────────────────────
+
+def test_sort_by_time_chronological_order():
+    """Tasks added out of order must be returned earliest-first."""
+    owner, pet, scheduler = make_scheduler()
+    pet.add_task(make_task(id=1, hour=10))
+    pet.add_task(make_task(id=2, hour=7))
+    pet.add_task(make_task(id=3, hour=9))
+
+    result = scheduler.sort_by_time()
+    hours = [t.due_time.hour for _, t in result]
+    assert hours == [7, 9, 10]
+
+
+def test_sort_by_time_empty_pet():
+    """sort_by_time() must return an empty list when there are no pending tasks."""
+    owner, pet, scheduler = make_scheduler()
+    assert scheduler.sort_by_time() == []
+
+
+def test_sort_by_time_ignores_priority():
+    """sort_by_time() must order by time only — a Low task at 7 AM comes before a High task at 9 AM."""
+    owner, pet, scheduler = make_scheduler()
+    pet.add_task(make_task(id=1, hour=9, priority="High"))
+    pet.add_task(make_task(id=2, hour=7, priority="Low"))
+
+    result = scheduler.sort_by_time()
+    assert result[0][1].priority == "Low"
+    assert result[1][1].priority == "High"
+
+
+# ── filter_tasks tests ────────────────────────────────────────────────────────
+
+def test_filter_by_pet_name():
+    """filter_tasks(pet_name=...) must return only that pet's tasks."""
+    owner = make_owner()
+    p1 = Pet(id=1, name="Mochi", species="Dog", age=3)
+    p2 = Pet(id=2, name="Luna",  species="Cat", age=5)
+    p1.add_task(make_task(id=1))
+    p2.add_task(make_task(id=2))
+    owner.add_pet(p1)
+    owner.add_pet(p2)
+    scheduler = Scheduler(owner)
+
+    result = scheduler.filter_tasks(pet_name="Mochi")
+    assert len(result) == 1
+    assert result[0][0] == "Mochi"
+
+
+def test_filter_by_completion_status():
+    """filter_tasks(completed=False) must exclude completed tasks."""
+    owner, pet, scheduler = make_scheduler()
+    t1 = make_task(id=1)
+    t2 = make_task(id=2)
+    t2.mark_complete()
+    pet.add_task(t1)
+    pet.add_task(t2)
+
+    result = scheduler.filter_tasks(completed=False)
+    assert len(result) == 1
+    assert result[0][1].id == 1
+
+
+def test_filter_no_match_returns_empty():
+    """filter_tasks() with a non-existent pet name must return an empty list."""
+    owner, pet, scheduler = make_scheduler()
+    pet.add_task(make_task())
+    assert scheduler.filter_tasks(pet_name="Ghost") == []
+
+
+# ── get_conflict_warnings tests ───────────────────────────────────────────────
+
+def test_conflict_warnings_detects_overlap():
+    """get_conflict_warnings() must report overlapping tasks."""
+    owner, pet, scheduler = make_scheduler()
+    pet.add_task(make_task(id=1, hour=9, minute=0,  duration=60))   # 9:00–10:00
+    pet.add_task(make_task(id=2, hour=9, minute=30, duration=30))   # 9:30–10:00  ← overlaps
+
+    warnings = scheduler.get_conflict_warnings()
+    assert len(warnings) == 1
+    assert "overlap" in warnings[0].lower() or "conflict" in warnings[0].lower()
+
+
+def test_conflict_warnings_exact_same_time():
+    """Two tasks starting at the exact same time must be flagged."""
+    owner, pet, scheduler = make_scheduler()
+    pet.add_task(make_task(id=1, hour=8, minute=0, duration=30))
+    pet.add_task(make_task(id=2, hour=8, minute=0, duration=15))
+
+    warnings = scheduler.get_conflict_warnings()
+    assert len(warnings) >= 1
+
+
+def test_conflict_warnings_adjacent_no_conflict():
+    """Back-to-back tasks (no gap, no overlap) must produce no warnings."""
+    owner, pet, scheduler = make_scheduler()
+    pet.add_task(make_task(id=1, hour=9, minute=0,  duration=30))   # 9:00–9:30
+    pet.add_task(make_task(id=2, hour=9, minute=30, duration=30))   # 9:30–10:00
+
+    assert scheduler.get_conflict_warnings() == []
+
+
+def test_conflict_warnings_cross_pet():
+    """Overlapping tasks on *different* pets must still be flagged."""
+    owner = make_owner()
+    p1 = Pet(id=1, name="Mochi", species="Dog", age=3)
+    p2 = Pet(id=2, name="Luna",  species="Cat", age=5)
+    p1.add_task(make_task(id=1, hour=8, minute=0,  duration=60))    # 8:00–9:00
+    p2.add_task(make_task(id=2, hour=8, minute=30, duration=30))    # 8:30–9:00  ← overlaps
+    owner.add_pet(p1)
+    owner.add_pet(p2)
+    scheduler = Scheduler(owner)
+
+    warnings = scheduler.get_conflict_warnings()
+    assert len(warnings) == 1
+
+
+def test_no_warnings_when_no_tasks():
+    """get_conflict_warnings() must return an empty list when there are no tasks."""
+    owner, pet, scheduler = make_scheduler()
+    assert scheduler.get_conflict_warnings() == []
+
+
+# ── mark_task_complete tests ──────────────────────────────────────────────────
+
+def test_mark_task_complete_sets_flag():
+    """mark_task_complete() must mark the task as done."""
+    owner, pet, scheduler = make_scheduler()
+    task = make_task(id=1, frequency="Once")
+    pet.add_task(task)
+    scheduler.mark_task_complete(task)
+    assert task.is_completed is True
+
+
+def test_mark_task_complete_daily_creates_next():
+    """Completing a Daily task must append a new task due one day later."""
+    from datetime import timedelta
+    owner, pet, scheduler = make_scheduler()
+    task = make_task(id=1, hour=8, frequency="Daily")
+    pet.add_task(task)
+    scheduler.mark_task_complete(task)
+
+    new_tasks = [t for t in pet.tasks if t.id != 1]
+    assert len(new_tasks) == 1
+    assert new_tasks[0].due_time == task.due_time + timedelta(days=1)
+    assert new_tasks[0].is_completed is False
+
+
+def test_mark_task_complete_weekly_creates_next():
+    """Completing a Weekly task must append a new task due seven days later."""
+    from datetime import timedelta
+    owner, pet, scheduler = make_scheduler()
+    task = make_task(id=1, hour=8, frequency="Weekly")
+    pet.add_task(task)
+    scheduler.mark_task_complete(task)
+
+    new_tasks = [t for t in pet.tasks if t.id != 1]
+    assert len(new_tasks) == 1
+    assert new_tasks[0].due_time == task.due_time + timedelta(weeks=1)
+
+
+def test_mark_task_complete_once_no_recurrence():
+    """Completing a Once task must NOT create a new task."""
+    owner, pet, scheduler = make_scheduler()
+    task = make_task(id=1, frequency="Once")
+    pet.add_task(task)
+    scheduler.mark_task_complete(task)
+
+    assert len(pet.tasks) == 1   # only the original, no new task
+
+
+# ── Edge case: pet with no tasks ──────────────────────────────────────────────
+
+def test_scheduler_handles_pet_with_no_tasks():
+    """All scheduler methods must work without raising when a pet has no tasks."""
+    owner, pet, scheduler = make_scheduler()   # pet has no tasks
+
+    assert scheduler.sort_by_time() == []
+    assert scheduler.filter_tasks() == []
+    assert scheduler.get_conflict_warnings() == []
+    assert scheduler.get_upcoming_tasks() == []
+    plan = scheduler.generate_daily_plan()
+    assert plan == []

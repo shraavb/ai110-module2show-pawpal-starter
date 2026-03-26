@@ -32,6 +32,29 @@ source .venv/bin/activate  # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
+## Testing PawPal+
+
+Run the full test suite:
+
+```bash
+python -m pytest
+```
+
+27 automated tests across 5 categories:
+
+| Category | Tests | What's covered |
+|---|---|---|
+| **Task** | 3 | `mark_complete()` correctness and idempotency; `priority_score()` values |
+| **Pet** | 2 | Task count increases on add; completed tasks excluded from pending list |
+| **Owner** | 1 | `get_all_tasks()` spans every pet |
+| **Scheduler — core** | 5 | Priority sort; overlap detection; adjacent tasks not flagged; budget hard cutoff; recurring generation |
+| **Scheduler — Phase 4** | 16 | `sort_by_time()` order and empty state; `filter_tasks()` by name, status, and no-match; `get_conflict_warnings()` for overlap, exact same time, adjacent, cross-pet, and empty; `mark_task_complete()` for Daily, Weekly, Once, and flag; pet-with-no-tasks edge case |
+
+**Confidence: ★★★★☆**
+Happy paths and most edge cases are covered. Gaps that would raise confidence to 5 stars: testing `generate_daily_plan()` with a cross-pet conflict in the plan output; testing `generate_recurring_tasks()` called twice (duplicate guard); and integration tests that exercise the full Owner → Scheduler → PlanEntry pipeline with realistic multi-pet data.
+
+---
+
 ## Smarter Scheduling
 
 PawPal+ includes four algorithmic features beyond basic task storage:

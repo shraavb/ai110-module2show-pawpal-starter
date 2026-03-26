@@ -61,6 +61,34 @@ python -m pytest
 
 ---
 
+## Challenge Extensions
+
+### Challenge 1 — Next Available Slot (Agent Mode)
+
+`Scheduler.find_next_slot(duration_mins, after)` was designed and implemented using Agent Mode with the prompt:
+
+> *"Based on `#file:pawpal_system.py`, add a `find_next_slot` method to the Scheduler that scans forward in 15-minute increments from a given datetime and returns the first window of `duration_mins` minutes that doesn't overlap any pending task. Return `None` if no slot is found before midnight."*
+
+Agent Mode explored the existing `get_conflict_warnings()` overlap logic, reused the same `(start, end)` window comparison pattern, and proposed the 15-minute step granularity to match the task form's minute selector. The main human decision was choosing 15-minute steps over 1-minute steps — coarser but sufficient for pet care scheduling and much faster to scan.
+
+### Challenge 2 — JSON Persistence (Agent Mode)
+
+Data persistence was added using Agent Mode with the prompt:
+
+> *"Add `save_to_json` and `load_from_json` methods to the Owner class in `#file:pawpal_system.py`, then update Streamlit state in `#file:app.py` to load this data on startup."*
+
+Agent Mode identified that `datetime` fields needed custom serialization (ISO 8601 strings via `.isoformat()` / `datetime.fromisoformat()`) rather than a third-party library like marshmallow, keeping dependencies minimal. It also proposed resuming the ID counter from `max(all_ids) + 1` on load, preventing collisions after a reload. The human review caught one gap: the agent's draft didn't add `data.json` to `.gitignore`, which was added manually.
+
+### Challenge 3 — Priority Emojis (Challenge 3)
+
+Priority emojis (🔴 High · 🟡 Medium · 🟢 Low) appear in all three task table tabs in the Streamlit UI and in the daily plan output in `main.py`. Implemented via a `PRIORITY_ICON` dict mapping applied at render time — no changes to the data model needed.
+
+### Challenge 4 — Tabulate CLI Output
+
+`main.py` uses the `tabulate` library (`simple` format) for all task and plan tables. Priority emojis prefix each plan row for at-a-glance readability.
+
+---
+
 ## Smarter Scheduling
 
 The daily plan (`generate_daily_plan()`) uses a **greedy algorithm**: tasks are walked in priority → due-time order. Each task is placed in the plan if it fits within the owner's time budget *and* doesn't overlap an already-placed slot. Tasks that fail either check are skipped with a reason rather than crashing.

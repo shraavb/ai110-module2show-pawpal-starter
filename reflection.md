@@ -113,3 +113,36 @@ Second, **the Streamlit UI has no "mark complete" button**. The `mark_task_compl
 **c. Key takeaway**
 
 The most important thing I learned is that **AI is most useful when you already know what you want and need help with *how* to get there**. When I had a clear design (sort by priority then time, return a list of `PlanEntry` objects, never crash on conflicts), AI helped me write the implementation quickly. When I didn't have a clear design yet, AI suggestions pulled me toward generic solutions that didn't fit the specific problem. The investment in UML and step-by-step planning before writing code wasn't just busywork — it was what made AI collaboration productive instead of distracting.
+
+---
+
+## 6. Prompt Comparison — Rescheduling Weekly Tasks
+
+I asked two models the same prompt: *"Write a Python method for a Scheduler class that, when a weekly task is marked complete, creates the next occurrence one week later and appends it to the correct pet's task list."*
+
+**Model A — GPT-4o** returned:
+
+```python
+def reschedule_weekly(self, task, pets):
+    for pet in pets:
+        if task in pet.tasks:
+            new_task = Task(
+                id=task.id + 1,
+                description=task.description,
+                due_time=task.due_time + timedelta(weeks=1),
+                duration_mins=task.duration_mins,
+                priority=task.priority,
+                frequency=task.frequency,
+                is_completed=False
+            )
+            pet.tasks.append(new_task)
+            break
+```
+
+**Model B — Claude** returned a version that used `next()` to locate the pet, derived the new ID from `max(all_ids) + 1`, and set `is_completed=False` explicitly — matching the pattern already used in `generate_recurring_tasks()`.
+
+**Which was better and why:**
+
+Claude's version was more *consistent* with the existing codebase — it used the same ID generation strategy and the same `next()` idiom already present in `mark_task_complete()`. GPT-4o's version used `task.id + 1` for the new ID, which breaks if any task is ever deleted (the old ID could be reused) and would collide with the existing ID counter. GPT-4o also used `pet.tasks.append()` directly instead of `pet.add_task()`, bypassing the Pet's own method and creating a coupling inconsistency.
+
+The practical lesson: when working within an existing codebase, the better response is the one that reads the *patterns already present* and matches them, not the one that produces valid Python in isolation. Providing the existing method as context in the prompt (`#file:pawpal_system.py`) was what made Claude's response fit cleanly — without that context, both models would likely have produced something syntactically correct but stylistically inconsistent.

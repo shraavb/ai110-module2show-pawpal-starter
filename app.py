@@ -158,12 +158,16 @@ else:
             ["By priority", "By time", "Filter by pet"]
         )
 
+        PRIORITY_ICON = {"High": "🔴 High", "Medium": "🟡 Medium", "Low": "🟢 Low"}
+
         with tab_priority:
             s = Scheduler(owner)
             rows = s.get_upcoming_tasks()
             st.table([
                 {"Pet": n, "Task": t.description, "Due": t.due_time.strftime("%I:%M %p"),
-                 "Duration": f"{t.duration_mins} min", "Priority": t.priority, "Repeat": t.frequency}
+                 "Duration": f"{t.duration_mins} min",
+                 "Priority": PRIORITY_ICON.get(t.priority, t.priority),
+                 "Repeat": t.frequency}
                 for n, t in rows
             ])
 
@@ -173,7 +177,8 @@ else:
             st.caption("Tasks in chronological order, regardless of priority.")
             st.table([
                 {"Due": t.due_time.strftime("%I:%M %p"), "Pet": n, "Task": t.description,
-                 "Duration": f"{t.duration_mins} min", "Priority": t.priority}
+                 "Duration": f"{t.duration_mins} min",
+                 "Priority": PRIORITY_ICON.get(t.priority, t.priority)}
                 for n, t in rows
             ])
 
@@ -186,7 +191,8 @@ else:
             if rows:
                 st.table([
                     {"Pet": n, "Task": t.description, "Due": t.due_time.strftime("%I:%M %p"),
-                     "Priority": t.priority, "Repeat": t.frequency}
+                     "Priority": PRIORITY_ICON.get(t.priority, t.priority),
+                     "Repeat": t.frequency}
                     for n, t in rows
                 ])
             else:

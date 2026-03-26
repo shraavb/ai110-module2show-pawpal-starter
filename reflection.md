@@ -4,13 +4,21 @@
 
 **a. Initial design**
 
-- Briefly describe your initial UML design.
-- What classes did you include, and what responsibilities did you assign to each?
+My initial UML design had three core classes:
+
+- **`Task`** — holds a single care activity with attributes for `description`, `due_time`, `duration_mins`, `priority` (Low/Medium/High), `frequency` (Once/Daily/Weekly), and `is_completed`. Responsible only for representing data about one activity.
+- **`Pet`** — holds a pet's profile (`name`, `species`, `age`) and owns a list of `Task` objects. Responsible for adding tasks and reporting its own schedule.
+- **`Scheduler`** — the central "brain." Holds a list of `Pet` objects and is responsible for sorting tasks by priority and time, detecting time-slot conflicts across all pets, and generating the daily plan.
+
+I initially also sketched an `Owner` class that would store preferences (e.g., available hours per day), but left it out of the first version to keep scope manageable.
 
 **b. Design changes**
 
-- Did your design change during implementation?
-- If yes, describe at least one change and why you made it.
+Yes — my design changed in two ways during implementation.
+
+First, I moved conflict detection fully into `Scheduler` rather than `Pet`. My first sketch had `Pet.has_conflict(task)` as a method, but I realized conflicts can happen *across* pets (two pets need a walk at the same time), so only the `Scheduler` has the full picture needed to check conflicts correctly.
+
+Second, I added a `priority_score()` helper method to `Task`. When I started implementing `get_upcoming_tasks()`, I found myself repeating the same priority-to-integer mapping (`"High" → 3`, `"Medium" → 2`, `"Low" → 1`) in multiple places. Moving it into `Task` made the sort key cleaner and centralized the logic.
 
 ---
 
@@ -18,13 +26,19 @@
 
 **a. Constraints and priorities**
 
-- What constraints does your scheduler consider (for example: time, priority, preferences)?
-- How did you decide which constraints mattered most?
+The scheduler considers three constraints:
+
+1. **Priority** — High-priority tasks (medications, feeding) are scheduled before lower-priority ones.
+2. **Due time** — Among tasks with equal priority, earlier due times are scheduled first.
+3. **No time-slot overlap** — `check_conflicts()` checks whether a new task's time window (`due_time` to `due_time + duration`) overlaps with any already-scheduled task for any pet.
+
+I decided priority mattered most because missing a medication dose has a direct health consequence, whereas skipping enrichment for a day is much lower risk. I used due time as the tiebreaker because it reflects real-world urgency — a walk due at 8 AM should happen before one due at 5 PM even if both are "Medium."
 
 **b. Tradeoffs**
 
-- Describe one tradeoff your scheduler makes.
-- Why is that tradeoff reasonable for this scenario?
+The main tradeoff is that the scheduler is **greedy and non-backtracking**: it places tasks in priority order and skips any task that conflicts with an already-placed task, rather than trying to rearrange the schedule to fit more tasks in.
+
+This is reasonable here because the alternative — exhaustively searching for an optimal packing — is much more complex to implement and explain, and for a single owner with a handful of pets the greedy approach will almost always produce a good-enough result. The cost is that in rare dense schedules the greedy approach might skip a high-priority task that could have been fit in if a lower-priority task had been moved; a future version could add a swap step to handle this.
 
 ---
 
@@ -32,13 +46,19 @@
 
 **a. How you used AI**
 
-- How did you use AI tools during this project (for example: design brainstorming, debugging, refactoring)?
-- What kinds of prompts or questions were most helpful?
+I used AI tools in three main ways:
+
+- **Design brainstorming** — I described the scenario to Claude and asked it to help me draft a UML diagram. That conversation surfaced the question of whether conflict detection belongs in `Pet` or `Scheduler`, which led directly to the design change described above.
+- **Sorting logic** — I asked for help writing the `key` function for `sorted()` that combines priority and due time into a single comparable value. The AI suggested using a tuple `(-priority_score(), due_time)` as the sort key, which was clean and correct.
+- **Debugging** — When my overlap check was giving false positives, I described the condition to the AI and it helped me spot that I was comparing `datetime` objects without normalizing timezone info.
+
+The most helpful prompts were specific and concrete: "Here is my `check_conflicts` method — walk me through whether this condition correctly detects a partial overlap" was much more useful than "how do I detect conflicts?"
 
 **b. Judgment and verification**
 
-- Describe one moment where you did not accept an AI suggestion as-is.
-- How did you evaluate or verify what the AI suggested?
+When I asked the AI to help implement `generate_recurring_tasks()`, it suggested using `datetime.timedelta` to add one day (for daily tasks) and then appending a new `Task` with the same attributes but an updated `due_time`. The suggestion looked right, but I noticed it did not copy the `is_completed` flag — it left the new task with `is_completed=True` if the original had been marked complete.
+
+I caught this by tracing through a concrete example: if I complete today's feeding task and then call `generate_recurring_tasks()`, the next day's feeding task should start as *incomplete*. The AI's code would have pre-marked tomorrow's task as done. I fixed it by explicitly setting `is_completed=False` on each generated task, and added a test case that checks the flag on the generated task rather than just checking that a new task was created.
 
 ---
 
@@ -46,13 +66,23 @@
 
 **a. What you tested**
 
-- What behaviors did you test?
-- Why were these tests important?
+I wrote tests for four behaviors:
+
+1. **`Task.mark_complete()`** — verifies that calling the method sets `is_completed` to `True`.
+2. **`Scheduler.get_upcoming_tasks()`** — creates three tasks with mixed priorities and verifies the returned list is ordered High → Medium → Low.
+3. **`Scheduler.check_conflicts()`** — tests two cases: a new task that overlaps an existing task (should return `True`) and one that doesn't overlap (should return `False`).
+4. **`Scheduler.generate_recurring_tasks()`** — verifies that a Daily task produces a new task scheduled one day later with `is_completed=False`.
+
+These tests mattered because they cover the three methods that have the most logic and the most ways to be wrong. The conflict detection test in particular exercises the boundary condition (tasks that are adjacent but not overlapping should not be flagged).
 
 **b. Confidence**
 
-- How confident are you that your scheduler works correctly?
-- What edge cases would you test next if you had more time?
+I'm fairly confident in the core happy-path cases. The edge cases I would test next given more time:
+
+- Two tasks with the exact same `due_time` and `duration` — should be flagged as a conflict; currently borderline because the overlap check uses strict inequality on one end.
+- A `duration_mins` of 0 — does the scheduler handle instantaneous tasks correctly?
+- `generate_recurring_tasks()` called multiple times on the same pet — are duplicate tasks generated?
+- A pet with no tasks — does `get_upcoming_tasks()` return an empty list without error?
 
 ---
 
@@ -60,12 +90,12 @@
 
 **a. What went well**
 
-- What part of this project are you most satisfied with?
+I'm most satisfied with the separation of concerns between `Task`, `Pet`, and `Scheduler`. Each class does one thing: `Task` holds data, `Pet` groups tasks by animal, and `Scheduler` makes decisions. This made the code easy to test in isolation and made it straightforward to add the `priority_score()` helper without touching the scheduler.
 
 **b. What you would improve**
 
-- If you had another iteration, what would you improve or redesign?
+If I had another iteration, I would implement the `Owner` class I initially cut. Right now the scheduler has no concept of how much time an owner actually has in a day, so it will happily generate a schedule that requires six hours of care tasks for a two-hour morning window. Adding an `available_minutes` constraint to `Owner` and surfacing a warning (or pruning low-priority tasks) when the schedule exceeds it would make the output much more useful.
 
 **c. Key takeaway**
 
-- What is one important thing you learned about designing systems or working with AI on this project?
+The most important thing I learned is that **AI suggestions need to be tested against concrete examples, not just read and accepted**. The recurring-task bug was invisible when I read the AI's code — it looked correct. It only became visible when I traced through a specific scenario with actual values. Going forward I'll treat AI-generated logic the same way I treat code review: understand it line by line and construct at least one concrete test case before trusting it.

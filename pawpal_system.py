@@ -52,88 +52,108 @@ class Owner:
         """Add a pet to this owner's roster."""
         self.pets.append(pet)
 
-    def total_task_minutes(self) -> int:
-        """Sum of duration across all pending tasks for all pets."""
-        return sum(
-            task.duration_mins
+    def get_all_tasks(self) -> List[tuple]:
+        """Return (pet_name, task) tuples for every pending task across all pets."""
+        return [
+            (pet.name, task)
             for pet in self.pets
             for task in pet.get_pending_tasks()
-        )
+        ]
+
+    def total_task_minutes(self) -> int:
+        """Sum of duration across all pending tasks for all pets."""
+        return sum(task.duration_mins for _, task in self.get_all_tasks())
+
+
+@dataclass
+class PlanEntry:
+    """One scheduled or skipped task in the daily plan, with a human-readable reason."""
+    pet_name: str
+    task: Task
+    scheduled: bool          # True = included in plan, False = skipped
+    reason: str              # e.g. "High priority · 8:00 AM" or "Skipped: time budget exceeded"
 
 
 class Scheduler:
-    """
-    Manages scheduling logic, conflict detection, and plan generation.
-    This is the 'brain' of the system.
-    """
+    """Brain of PawPal+: sorts, conflict-checks, and generates the daily care plan."""
 
     def __init__(self, owner: Owner):
         self.owner = owner
 
     def get_upcoming_tasks(self) -> List[tuple]:
-        """
-        Return all pending tasks sorted by priority (High first),
-        then by due_time. Each item is a (pet_name, task) tuple.
-        """
-        all_tasks = [
-            (pet.name, task)
-            for pet in self.owner.pets
-            for task in pet.get_pending_tasks()
-        ]
-        return sorted(all_tasks, key=lambda x: (-x[1].priority_score(), x[1].due_time))
+        """Return all pending (pet_name, task) tuples sorted by priority then due_time."""
+        return sorted(
+            self.owner.get_all_tasks(),
+            key=lambda x: (-x[1].priority_score(), x[1].due_time),
+        )
 
     def check_conflicts(self, new_task: Task) -> bool:
-        """
-        Return True if new_task's time window overlaps with any
-        already-scheduled task across all pets.
-        """
+        """Return True if new_task's time window overlaps any pending task across all pets."""
         new_start = new_task.due_time
         new_end = new_start + timedelta(minutes=new_task.duration_mins)
 
-        for pet in self.owner.pets:
-            for task in pet.get_pending_tasks():
-                if task is new_task:
-                    continue
-                existing_start = task.due_time
-                existing_end = existing_start + timedelta(minutes=task.duration_mins)
-                if new_start < existing_end and new_end > existing_start:
-                    return True
+        for _, task in self.owner.get_all_tasks():
+            if task is new_task:
+                continue
+            existing_start = task.due_time
+            existing_end = existing_start + timedelta(minutes=task.duration_mins)
+            if new_start < existing_end and new_end > existing_start:
+                return True
         return False
 
-    def generate_daily_plan(self) -> List[tuple]:
-        """
-        Greedy scheduler: place tasks in priority+time order,
-        skipping any that conflict with already-placed ones or would
-        exceed the owner's available_minutes for the day.
-        Returns a list of (pet_name, task) tuples in scheduled order.
-        """
-        plan = []
-        scheduled_tasks = []
-        total_scheduled_mins = 0
+    def generate_daily_plan(self) -> List[PlanEntry]:
+        """Greedily schedule tasks by priority, respecting time budget and slot conflicts."""
+        entries: List[PlanEntry] = []
+        committed: List[tuple] = []   # (start: datetime, duration_mins: int)
+        total_mins = 0
 
         for pet_name, task in self.get_upcoming_tasks():
-            if total_scheduled_mins + task.duration_mins > self.owner.available_minutes:
+            time_label = task.due_time.strftime("%I:%M %p")
+
+            # Hard cutoff: owner doesn't have enough time left
+            if total_mins + task.duration_mins > self.owner.available_minutes:
+                entries.append(PlanEntry(
+                    pet_name=pet_name,
+                    task=task,
+                    scheduled=False,
+                    reason=f"Skipped: time budget exceeded "
+                           f"({total_mins}/{self.owner.available_minutes} min used)",
+                ))
                 continue
 
+            # Conflict check against already-committed slots
             task_start = task.due_time
             task_end = task_start + timedelta(minutes=task.duration_mins)
-            conflict = any(
-                task_start < (s + timedelta(minutes=d)) and task_end > s
-                for s, d in scheduled_tasks
+            conflict_with = next(
+                (s for s, d in committed
+                 if task_start < s + timedelta(minutes=d) and task_end > s),
+                None,
             )
-            if not conflict:
-                plan.append((pet_name, task))
-                scheduled_tasks.append((task_start, task.duration_mins))
-                total_scheduled_mins += task.duration_mins
+            if conflict_with is not None:
+                entries.append(PlanEntry(
+                    pet_name=pet_name,
+                    task=task,
+                    scheduled=False,
+                    reason=f"Skipped: time conflict at {conflict_with.strftime('%I:%M %p')}",
+                ))
+                continue
 
-        return plan
+            # Task fits — add to plan
+            entries.append(PlanEntry(
+                pet_name=pet_name,
+                task=task,
+                scheduled=True,
+                reason=f"{task.priority} priority · due {time_label} · {task.duration_mins} min",
+            ))
+            committed.append((task_start, task.duration_mins))
+            total_mins += task.duration_mins
+
+        return entries
 
     def generate_recurring_tasks(self):
-        """
-        For each completed Daily or Weekly task, create the next
-        occurrence and add it back to the pet's task list.
-        """
-        next_task_id = sum(len(pet.tasks) for pet in self.owner.pets) + 1
+        """Append the next occurrence of each completed Daily/Weekly task to its pet."""
+        all_ids = [task.id for pet in self.owner.pets for task in pet.tasks]
+        next_task_id = max(all_ids, default=0) + 1
 
         for pet in self.owner.pets:
             new_tasks = []

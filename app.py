@@ -1,14 +1,22 @@
 import streamlit as st
-from datetime import datetime
+from datetime import datetime, timedelta
 from pawpal_system import Owner, Pet, Task, Scheduler
 
 st.set_page_config(page_title="PawPal+", page_icon="🐾", layout="centered")
 
 # ── Session state bootstrap ───────────────────────────────────────────────────
+DATA_FILE = "data.json"
+
 if "owner" not in st.session_state:
-    st.session_state.owner = None
+    # Challenge 2: load persisted data on startup if available
+    st.session_state.owner = Owner.load_from_json(DATA_FILE)
 if "next_id" not in st.session_state:
-    st.session_state.next_id = 1
+    # Resume ID counter from the highest existing ID so we never collide
+    if st.session_state.owner:
+        all_ids = [t.id for p in st.session_state.owner.pets for t in p.tasks]
+        st.session_state.next_id = max(all_ids, default=0) + 1
+    else:
+        st.session_state.next_id = 1
 
 
 def next_id() -> int:
@@ -16,6 +24,12 @@ def next_id() -> int:
     id_ = st.session_state.next_id
     st.session_state.next_id += 1
     return id_
+
+
+def autosave():
+    """Persist current owner state to data.json after every mutation."""
+    if st.session_state.owner:
+        st.session_state.owner.save_to_json(DATA_FILE)
 
 
 # ── Header ────────────────────────────────────────────────────────────────────
@@ -39,6 +53,7 @@ with st.form("owner_form"):
 if submitted:
     existing_pets = st.session_state.owner.pets if st.session_state.owner else []
     st.session_state.owner = Owner(name=owner_name, available_minutes=available, pets=existing_pets)
+    autosave()
     st.success(f"Owner saved: {owner_name} ({available} min available today)")
 
 if st.session_state.owner is None:
@@ -68,6 +83,7 @@ if add_pet:
         st.warning(f"A pet named '{pet_name}' already exists.")
     else:
         owner.add_pet(Pet(id=next_id(), name=pet_name, species=species, age=age))
+        autosave()
         st.success(f"Added {species} '{pet_name}' (age {age}).")
 
 if owner.pets:
@@ -108,7 +124,22 @@ else:
             frequency=task_freq,
         )
         pet.add_task(task)
+        autosave()
         st.success(f"Added '{task_desc}' to {task_pet} at {due.strftime('%I:%M %p')} ({task_pri} priority).")
+
+    # ── Challenge 1: Find next available slot ────────────────────────────────
+    with st.expander("🔍 Find next available slot"):
+        slot_dur = st.number_input("Duration needed (minutes)", min_value=5, max_value=240,
+                                   value=30, key="slot_dur")
+        if st.button("Find slot", key="find_slot"):
+            s = Scheduler(owner)
+            slot = s.find_next_slot(int(slot_dur))
+            if slot:
+                slot_end = slot + timedelta(minutes=int(slot_dur))
+                st.success(f"Next free {slot_dur}-min slot: **{slot.strftime('%I:%M %p')}** "
+                           f"→ {slot_end.strftime('%I:%M %p')}")
+            else:
+                st.error("No free slot found for the rest of today.")
 
     # ── Conflict warnings ─────────────────────────────────────────────────────
     # Run before showing the task table so the owner sees problems immediately.

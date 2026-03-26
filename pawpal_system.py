@@ -1,6 +1,8 @@
+import json
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import List
+from pathlib import Path
+from typing import List, Optional
 
 
 @dataclass
@@ -22,6 +24,31 @@ class Task:
         """Return a numeric score for sorting (higher = more urgent)."""
         return {"High": 3, "Medium": 2, "Low": 1}.get(self.priority, 0)
 
+    def to_dict(self) -> dict:
+        """Serialize to a JSON-safe dictionary."""
+        return {
+            "id": self.id,
+            "description": self.description,
+            "due_time": self.due_time.isoformat(),
+            "duration_mins": self.duration_mins,
+            "priority": self.priority,
+            "frequency": self.frequency,
+            "is_completed": self.is_completed,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "Task":
+        """Deserialize from a dictionary produced by to_dict()."""
+        return cls(
+            id=d["id"],
+            description=d["description"],
+            due_time=datetime.fromisoformat(d["due_time"]),
+            duration_mins=d["duration_mins"],
+            priority=d["priority"],
+            frequency=d["frequency"],
+            is_completed=d["is_completed"],
+        )
+
 
 @dataclass
 class Pet:
@@ -39,6 +66,23 @@ class Pet:
     def get_pending_tasks(self) -> List[Task]:
         """Return all tasks that are not yet completed."""
         return [t for t in self.tasks if not t.is_completed]
+
+    def to_dict(self) -> dict:
+        """Serialize to a JSON-safe dictionary."""
+        return {
+            "id": self.id,
+            "name": self.name,
+            "species": self.species,
+            "age": self.age,
+            "tasks": [t.to_dict() for t in self.tasks],
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "Pet":
+        """Deserialize from a dictionary produced by to_dict()."""
+        pet = cls(id=d["id"], name=d["name"], species=d["species"], age=d["age"])
+        pet.tasks = [Task.from_dict(t) for t in d.get("tasks", [])]
+        return pet
 
 
 @dataclass
@@ -64,6 +108,37 @@ class Owner:
         """Sum of duration across all pending tasks for all pets."""
         return sum(task.duration_mins for _, task in self.get_all_tasks())
 
+    def owner_summary(self) -> str:
+        """Return a one-line summary string for display purposes."""
+        return f"{self.name} ({self.available_minutes} min, {len(self.pets)} pet(s))"
+
+    def to_dict(self) -> dict:
+        """Serialize the entire owner (pets + tasks) to a JSON-safe dictionary."""
+        return {
+            "name": self.name,
+            "available_minutes": self.available_minutes,
+            "pets": [p.to_dict() for p in self.pets],
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "Owner":
+        """Deserialize from a dictionary produced by to_dict()."""
+        owner = cls(name=d["name"], available_minutes=d["available_minutes"])
+        owner.pets = [Pet.from_dict(p) for p in d.get("pets", [])]
+        return owner
+
+    def save_to_json(self, path: str = "data.json") -> None:
+        """Persist the owner, pets, and all tasks to a JSON file."""
+        Path(path).write_text(json.dumps(self.to_dict(), indent=2))
+
+    @classmethod
+    def load_from_json(cls, path: str = "data.json") -> Optional["Owner"]:
+        """Load owner data from a JSON file; returns None if the file doesn't exist."""
+        p = Path(path)
+        if not p.exists():
+            return None
+        return cls.from_dict(json.loads(p.read_text()))
+
 
 @dataclass
 class PlanEntry:
@@ -87,69 +162,6 @@ class Scheduler:
             key=lambda x: (-x[1].priority_score(), x[1].due_time),
         )
 
-    def check_conflicts(self, new_task: Task) -> bool:
-        """Return True if new_task's time window overlaps any pending task across all pets."""
-        new_start = new_task.due_time
-        new_end = new_start + timedelta(minutes=new_task.duration_mins)
-
-        for _, task in self.owner.get_all_tasks():
-            if task is new_task:
-                continue
-            existing_start = task.due_time
-            existing_end = existing_start + timedelta(minutes=task.duration_mins)
-            if new_start < existing_end and new_end > existing_start:
-                return True
-        return False
-
-    def generate_daily_plan(self) -> List[PlanEntry]:
-        """Greedily schedule tasks by priority, respecting time budget and slot conflicts."""
-        entries: List[PlanEntry] = []
-        committed: List[tuple] = []   # (start: datetime, duration_mins: int)
-        total_mins = 0
-
-        for pet_name, task in self.get_upcoming_tasks():
-            time_label = task.due_time.strftime("%I:%M %p")
-
-            # Hard cutoff: owner doesn't have enough time left
-            if total_mins + task.duration_mins > self.owner.available_minutes:
-                entries.append(PlanEntry(
-                    pet_name=pet_name,
-                    task=task,
-                    scheduled=False,
-                    reason=f"Skipped: time budget exceeded "
-                           f"({total_mins}/{self.owner.available_minutes} min used)",
-                ))
-                continue
-
-            # Conflict check against already-committed slots
-            task_start = task.due_time
-            task_end = task_start + timedelta(minutes=task.duration_mins)
-            conflict_with = next(
-                (s for s, d in committed
-                 if task_start < s + timedelta(minutes=d) and task_end > s),
-                None,
-            )
-            if conflict_with is not None:
-                entries.append(PlanEntry(
-                    pet_name=pet_name,
-                    task=task,
-                    scheduled=False,
-                    reason=f"Skipped: time conflict at {conflict_with.strftime('%I:%M %p')}",
-                ))
-                continue
-
-            # Task fits — add to plan
-            entries.append(PlanEntry(
-                pet_name=pet_name,
-                task=task,
-                scheduled=True,
-                reason=f"{task.priority} priority · due {time_label} · {task.duration_mins} min",
-            ))
-            committed.append((task_start, task.duration_mins))
-            total_mins += task.duration_mins
-
-        return entries
-
     def sort_by_time(self) -> List[tuple]:
         """Return all pending (pet_name, task) tuples sorted by due_time only, earliest first."""
         return sorted(self.owner.get_all_tasks(), key=lambda x: x[1].due_time)
@@ -166,10 +178,55 @@ class Scheduler:
                 results.append((pet.name, task))
         return results
 
+    def find_next_slot(self, duration_mins: int, after: datetime = None) -> Optional[datetime]:
+        """
+        Scan forward in 15-minute steps from `after` (default: now) and return the
+        earliest datetime at which a free window of `duration_mins` exists.
+        Returns None if no free slot is found before midnight.
+        """
+        start = (after or datetime.now()).replace(second=0, microsecond=0)
+        # Round up to the next 15-minute boundary
+        remainder = start.minute % 15
+        if remainder:
+            start += timedelta(minutes=15 - remainder)
+        end_of_day = start.replace(hour=23, minute=45)
+
+        busy = [
+            (t.due_time, t.due_time + timedelta(minutes=t.duration_mins))
+            for _, t in self.owner.get_all_tasks()
+        ]
+
+        candidate = start
+        while candidate + timedelta(minutes=duration_mins) <= end_of_day + timedelta(minutes=15):
+            window_end = candidate + timedelta(minutes=duration_mins)
+            overlap = any(
+                candidate < b_end and window_end > b_start
+                for b_start, b_end in busy
+            )
+            if not overlap:
+                return candidate
+            candidate += timedelta(minutes=15)
+
+        return None  # no free slot found today
+
+    def check_conflicts(self, new_task: Task) -> bool:
+        """Return True if new_task's time window overlaps any pending task across all pets."""
+        new_start = new_task.due_time
+        new_end = new_start + timedelta(minutes=new_task.duration_mins)
+
+        for _, task in self.owner.get_all_tasks():
+            if task is new_task:
+                continue
+            existing_start = task.due_time
+            existing_end = existing_start + timedelta(minutes=task.duration_mins)
+            if new_start < existing_end and new_end > existing_start:
+                return True
+        return False
+
     def get_conflict_warnings(self) -> List[str]:
         """Scan all pending tasks and return a warning string for every overlapping pair."""
         warnings = []
-        tasks = self.owner.get_all_tasks()   # list of (pet_name, task)
+        tasks = self.owner.get_all_tasks()
         for i, (pet_a, task_a) in enumerate(tasks):
             a_start = task_a.due_time
             a_end   = a_start + timedelta(minutes=task_a.duration_mins)
@@ -185,10 +242,49 @@ class Scheduler:
                     )
         return warnings
 
+    def generate_daily_plan(self) -> List[PlanEntry]:
+        """Greedily schedule tasks by priority, respecting time budget and slot conflicts."""
+        entries: List[PlanEntry] = []
+        committed: List[tuple] = []
+        total_mins = 0
+
+        for pet_name, task in self.get_upcoming_tasks():
+            time_label = task.due_time.strftime("%I:%M %p")
+
+            if total_mins + task.duration_mins > self.owner.available_minutes:
+                entries.append(PlanEntry(
+                    pet_name=pet_name, task=task, scheduled=False,
+                    reason=f"Skipped: time budget exceeded "
+                           f"({total_mins}/{self.owner.available_minutes} min used)",
+                ))
+                continue
+
+            task_start = task.due_time
+            task_end = task_start + timedelta(minutes=task.duration_mins)
+            conflict_with = next(
+                (s for s, d in committed
+                 if task_start < s + timedelta(minutes=d) and task_end > s),
+                None,
+            )
+            if conflict_with is not None:
+                entries.append(PlanEntry(
+                    pet_name=pet_name, task=task, scheduled=False,
+                    reason=f"Skipped: time conflict at {conflict_with.strftime('%I:%M %p')}",
+                ))
+                continue
+
+            entries.append(PlanEntry(
+                pet_name=pet_name, task=task, scheduled=True,
+                reason=f"{task.priority} priority · due {time_label} · {task.duration_mins} min",
+            ))
+            committed.append((task_start, task.duration_mins))
+            total_mins += task.duration_mins
+
+        return entries
+
     def mark_task_complete(self, task: Task) -> None:
         """Mark a task done and immediately queue its next occurrence if it recurs."""
         task.mark_complete()
-        # Only generate the next occurrence for this specific task
         pet = next((p for p in self.owner.pets if task in p.tasks), None)
         if pet is None or task.frequency == "Once":
             return

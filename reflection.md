@@ -4,21 +4,26 @@
 
 **a. Initial design**
 
-My initial UML design had three core classes:
+My UML design has four classes:
 
-- **`Task`** — holds a single care activity with attributes for `description`, `due_time`, `duration_mins`, `priority` (Low/Medium/High), `frequency` (Once/Daily/Weekly), and `is_completed`. Responsible only for representing data about one activity.
-- **`Pet`** — holds a pet's profile (`name`, `species`, `age`) and owns a list of `Task` objects. Responsible for adding tasks and reporting its own schedule.
-- **`Scheduler`** — the central "brain." Holds a list of `Pet` objects and is responsible for sorting tasks by priority and time, detecting time-slot conflicts across all pets, and generating the daily plan.
+- **`Task`** — a `@dataclass` holding a single care activity. Attributes: `id`, `description`, `due_time`, `duration_mins`, `priority` (Low/Medium/High), `frequency` (Once/Daily/Weekly), `is_completed`. Methods: `mark_complete()` sets the flag; `priority_score()` maps priority to an integer (High→3, Medium→2, Low→1) so tasks can be sorted. Responsible only for representing and scoring one activity.
+- **`Pet`** — a `@dataclass` holding a pet's profile (`id`, `name`, `species`, `age`) and owning a `List[Task]`. Methods: `add_task()` appends a task; `get_pending_tasks()` filters to incomplete ones. Responsible for grouping tasks by animal.
+- **`Owner`** — a `@dataclass` holding the human's `name`, `available_minutes` (hard cap on daily care time, default 120), and `List[Pet]`. Methods: `add_pet()` adds a pet; `total_task_minutes()` sums duration across all pending tasks to show whether the owner is overloaded. Responsible for expressing real-world capacity.
+- **`Scheduler`** — the central "brain." Takes an `Owner` and reaches all pets and tasks through it. Methods: `get_upcoming_tasks()` returns all pending tasks sorted by `(-priority_score, due_time)`; `check_conflicts()` checks time-window overlap across all pets; `generate_daily_plan()` greedily places tasks in priority order, enforcing both the `available_minutes` hard cutoff and no time-slot overlap; `generate_recurring_tasks()` creates next occurrences of Daily/Weekly tasks.
 
-I initially also sketched an `Owner` class that would store preferences (e.g., available hours per day), but left it out of the first version to keep scope manageable.
+Relationships: `Owner` → many `Pet`s → many `Task`s. `Scheduler` depends on `Owner` only.
 
 **b. Design changes**
 
-Yes — my design changed in two ways during implementation.
+Three changes came out of implementation and an AI review of the skeleton:
 
-First, I moved conflict detection fully into `Scheduler` rather than `Pet`. My first sketch had `Pet.has_conflict(task)` as a method, but I realized conflicts can happen *across* pets (two pets need a walk at the same time), so only the `Scheduler` has the full picture needed to check conflicts correctly.
+**1. `Owner` included from the start (not cut).** Early brainstorming treated `Owner` as optional, but adding `available_minutes` as a hard cutoff in `generate_daily_plan()` immediately made the scheduler more realistic — it now stops adding tasks once the owner's time budget is full rather than generating an impossible schedule.
 
-Second, I added a `priority_score()` helper method to `Task`. When I started implementing `get_upcoming_tasks()`, I found myself repeating the same priority-to-integer mapping (`"High" → 3`, `"Medium" → 2`, `"Low" → 1`) in multiple places. Moving it into `Task` made the sort key cleaner and centralized the logic.
+**2. Conflict detection lives in `Scheduler`, not `Pet`.** An early sketch put `has_conflict()` on `Pet`, but conflicts can happen *across* pets (two pets scheduled for a walk at the same time), so `Scheduler` is the only object with the full picture needed to check correctly.
+
+**3. Two bottlenecks found during AI review, one fixed:**
+- *Dual conflict systems*: `check_conflicts()` scans all pending tasks across all pets, while `generate_daily_plan()` maintains its own internal `scheduled_tasks` list — they are disconnected. `check_conflicts()` is now documented as an interactive helper (for validating a new task before adding it), while `generate_daily_plan()` uses its own tracking during plan construction. A future refactor could unify them.
+- *Fragile ID generation*: `generate_recurring_tasks()` used `sum(len(pet.tasks)...)` to pick the next task ID, which produces duplicate IDs on repeated calls. Fixed by introducing a simple incrementing counter based on the current total at call time — acceptable for now, but a global ID counter or UUID would be more robust at scale.
 
 ---
 
@@ -39,6 +44,10 @@ I decided priority mattered most because missing a medication dose has a direct 
 The main tradeoff is that the scheduler is **greedy and non-backtracking**: it places tasks in priority order and skips any task that conflicts with an already-placed task, rather than trying to rearrange the schedule to fit more tasks in.
 
 This is reasonable here because the alternative — exhaustively searching for an optimal packing — is much more complex to implement and explain, and for a single owner with a handful of pets the greedy approach will almost always produce a good-enough result. The cost is that in rare dense schedules the greedy approach might skip a high-priority task that could have been fit in if a lower-priority task had been moved; a future version could add a swap step to handle this.
+
+A second tradeoff is in **conflict detection scope**. `get_conflict_warnings()` checks for overlaps across *all pets*, while `generate_daily_plan()` only checks against tasks it has already committed to the plan. This means the two conflict systems can give different answers for the same task pair. The design choice was deliberate: `get_conflict_warnings()` is a diagnostic tool for the owner ("here's what's impossible"), while `generate_daily_plan()` is an optimizer ("here's the best achievable schedule"). Unifying them into one method would make the code simpler but would collapse two meaningfully different questions into one.
+
+A third tradeoff concerns **recurring task generation**. `mark_task_complete()` creates the next occurrence immediately when a task is completed, using `task.due_time + timedelta(days=1)`. This means if a task is completed early (e.g., the morning walk at 6 AM instead of 7 AM), the next occurrence is still scheduled for 7 AM tomorrow — it uses the *original* due time, not the actual completion time. This is simpler and more predictable for the owner (the schedule stays consistent), but it ignores the real rhythm of when care actually happened.
 
 ---
 

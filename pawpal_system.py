@@ -150,6 +150,60 @@ class Scheduler:
 
         return entries
 
+    def sort_by_time(self) -> List[tuple]:
+        """Return all pending (pet_name, task) tuples sorted by due_time only, earliest first."""
+        return sorted(self.owner.get_all_tasks(), key=lambda x: x[1].due_time)
+
+    def filter_tasks(self, pet_name: str = None, completed: bool = None) -> List[tuple]:
+        """Return (pet_name, task) tuples filtered by pet name and/or completion status."""
+        results = []
+        for pet in self.owner.pets:
+            if pet_name and pet.name.lower() != pet_name.lower():
+                continue
+            for task in pet.tasks:
+                if completed is not None and task.is_completed != completed:
+                    continue
+                results.append((pet.name, task))
+        return results
+
+    def get_conflict_warnings(self) -> List[str]:
+        """Scan all pending tasks and return a warning string for every overlapping pair."""
+        warnings = []
+        tasks = self.owner.get_all_tasks()   # list of (pet_name, task)
+        for i, (pet_a, task_a) in enumerate(tasks):
+            a_start = task_a.due_time
+            a_end   = a_start + timedelta(minutes=task_a.duration_mins)
+            for pet_b, task_b in tasks[i + 1:]:
+                b_start = task_b.due_time
+                b_end   = b_start + timedelta(minutes=task_b.duration_mins)
+                if a_start < b_end and a_end > b_start:
+                    warnings.append(
+                        f"⚠ Conflict: [{pet_a}] '{task_a.description}' "
+                        f"({a_start.strftime('%I:%M %p')}–{a_end.strftime('%I:%M %p')}) "
+                        f"overlaps [{pet_b}] '{task_b.description}' "
+                        f"({b_start.strftime('%I:%M %p')}–{b_end.strftime('%I:%M %p')})"
+                    )
+        return warnings
+
+    def mark_task_complete(self, task: Task) -> None:
+        """Mark a task done and immediately queue its next occurrence if it recurs."""
+        task.mark_complete()
+        # Only generate the next occurrence for this specific task
+        pet = next((p for p in self.owner.pets if task in p.tasks), None)
+        if pet is None or task.frequency == "Once":
+            return
+        delta = timedelta(days=1) if task.frequency == "Daily" else timedelta(weeks=1)
+        all_ids = [t.id for p in self.owner.pets for t in p.tasks]
+        pet.add_task(Task(
+            id=max(all_ids, default=0) + 1,
+            description=task.description,
+            due_time=task.due_time + delta,
+            duration_mins=task.duration_mins,
+            priority=task.priority,
+            frequency=task.frequency,
+            is_completed=False,
+        ))
+
     def generate_recurring_tasks(self):
         """Append the next occurrence of each completed Daily/Weekly task to its pet."""
         all_ids = [task.id for pet in self.owner.pets for task in pet.tasks]
